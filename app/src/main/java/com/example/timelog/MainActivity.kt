@@ -2,10 +2,15 @@ package com.example.timelog
 
 import android.app.*
 import android.content.*
+import android.graphics.Typeface
 import android.net.Uri
 import android.os.*
 import android.provider.MediaStore
 import android.provider.Settings
+import android.text.TextUtils
+import android.view.Gravity
+import android.view.View
+import android.view.ViewGroup
 import android.widget.*
 import java.text.SimpleDateFormat
 import java.util.*
@@ -19,47 +24,98 @@ class MainActivity : Activity() {
     private lateinit var note: EditText
     private lateinit var tagBox: GridLayout
     private lateinit var list: ListView
-    private lateinit var adapter: ArrayAdapter<String>
+    private lateinit var adapter: SlotAdapter
     private var slots = listOf<Long>()
     private var recs = mapOf<Long, Rec>()
 
-    private fun btn(t: String, f: () -> Unit) = Button(this).apply {
-        text = t; isAllCaps = false; setOnClickListener { f() }
-    }
+    private fun dp(x: Int) = Ui.dp(this, x)
+    private val white = 0x66FFFFFF
 
     override fun onCreate(b: Bundle?) {
         super.onCreate(b)
+        Ui.background(this)
         db = Db(this)
         if (Build.VERSION.SDK_INT >= 33 &&
             checkSelfPermission("android.permission.POST_NOTIFICATIONS") != android.content.pm.PackageManager.PERMISSION_GRANTED
         ) requestPermissions(arrayOf("android.permission.POST_NOTIFICATIONS"), 1)
         Sched.schedule(this)
 
-        val pad = (12 * resources.displayMetrics.density).toInt()
-        val root = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(pad, pad, pad, pad) }
-        head = TextView(this).apply { textSize = 18f }
-        note = EditText(this).apply { hint = "备注（可选），点下面的标签即保存"; setSingleLine() }
-        tagBox = GridLayout(this).apply { columnCount = 4 }
-        dateTv = TextView(this).apply { textSize = 16f; gravity = android.view.Gravity.CENTER }
-        val nav = LinearLayout(this)
-        nav.addView(btn("◀") { day--; target = dayStart(day); refresh() })
-        nav.addView(dateTv, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
-        nav.addView(btn("▶") {
-            if (day < 0) { day++; target = if (day == 0) slotOf(System.currentTimeMillis()) else dayStart(day); refresh() }
-        })
-        val acts = LinearLayout(this)
-        acts.addView(btn("统计") { startActivity(Intent(this, StatsActivity::class.java)) })
-        acts.addView(btn("导出CSV") { export() })
-        acts.addView(btn("设置") { settings() })
-        adapter = ArrayAdapter(this, android.R.layout.simple_list_item_1, mutableListOf<String>())
-        list = ListView(this).apply { this.adapter = this@MainActivity.adapter }
-        list.setOnItemClickListener { _, _, pos, _ ->
-            target = slots[pos]
-            note.setText(recs[target]?.note ?: "")
-            refresh()
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(16), dp(12), dp(16), dp(12))
         }
-        root.addView(head); root.addView(note); root.addView(tagBox); root.addView(nav); root.addView(acts)
-        root.addView(list, LinearLayout.LayoutParams(-1, 0, 1f))
+
+        // 大标题 + 日期切换
+        root.addView(Ui.label(this, "半小时记录", 30f, bold = true))
+        val nav = LinearLayout(this).apply {
+            gravity = Gravity.CENTER_VERTICAL
+            background = Ui.glass(this@MainActivity, 18, 0x55FFFFFF)
+        }
+        val prev = Ui.label(this, "‹", 24f).apply {
+            gravity = Gravity.CENTER; setPadding(dp(18), dp(2), dp(18), dp(4))
+            setOnClickListener { day--; target = dayStart(day); refresh() }
+        }
+        val next = Ui.label(this, "›", 24f).apply {
+            gravity = Gravity.CENTER; setPadding(dp(18), dp(2), dp(18), dp(4))
+            setOnClickListener {
+                if (day < 0) {
+                    day++
+                    target = if (day == 0) slotOf(System.currentTimeMillis()) else dayStart(day)
+                    refresh()
+                }
+            }
+        }
+        dateTv = Ui.label(this, "", 15f, Ui.INK2).apply { gravity = Gravity.CENTER }
+        nav.addView(prev)
+        nav.addView(dateTv, LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f))
+        nav.addView(next)
+        root.addView(nav, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(8) })
+
+        // 记录卡片
+        val rec = Ui.card(this)
+        head = Ui.label(this, "", 17f, bold = true)
+        note = EditText(this).apply {
+            hint = "备注（可选），点下面标签即保存"
+            textSize = 15f
+            setSingleLine()
+            setTextColor(Ui.INK)
+            setHintTextColor(Ui.INK2)
+            background = Ui.glass(this@MainActivity, 14, 0x55FFFFFF, 0x66FFFFFF)
+            setPadding(dp(14), dp(10), dp(14), dp(10))
+        }
+        tagBox = GridLayout(this).apply { columnCount = 4 }
+        rec.addView(head)
+        rec.addView(note, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(10); bottomMargin = dp(6) })
+        rec.addView(tagBox)
+        root.addView(rec, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(12) })
+
+        // 操作按钮
+        val acts = LinearLayout(this)
+        fun act(t: String, f: () -> Unit) = acts.addView(
+            Ui.chip(this, t, white, f),
+            LinearLayout.LayoutParams(0, -2, 1f).apply { setMargins(dp(3), 0, dp(3), 0) }
+        )
+        act("统计") { startActivity(Intent(this, StatsActivity::class.java)) }
+        act("导出 CSV") { export() }
+        act("设置") { settings() }
+        root.addView(acts, LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(12) })
+
+        // 当天 48 个时段
+        adapter = SlotAdapter()
+        list = ListView(this).apply {
+            divider = null
+            selector = android.graphics.drawable.ColorDrawable(0)
+            this.adapter = this@MainActivity.adapter
+            setOnItemClickListener { _, _, pos, _ ->
+                target = slots[pos]
+                note.setText(recs[target]?.note ?: "")
+                refresh()
+            }
+        }
+        val listCard = Ui.card(this).apply { setPadding(dp(6), dp(6), dp(6), dp(6)) }
+        listCard.addView(list, LinearLayout.LayoutParams(-1, -1))
+        root.addView(listCard, LinearLayout.LayoutParams(-1, 0, 1f).apply { topMargin = dp(12) })
+
         setContentView(root)
     }
 
@@ -75,11 +131,11 @@ class MainActivity : Activity() {
     private fun buildTags() {
         tagBox.removeAllViews()
         P.tags(this).forEach { t ->
-            val b = btn(t) { save(t) }
-            b.layoutParams = GridLayout.LayoutParams(
+            val chip = Ui.chip(this, t, Ui.alpha(colorOf(t), 0x80)) { save(t) }
+            chip.layoutParams = GridLayout.LayoutParams(
                 GridLayout.spec(GridLayout.UNDEFINED), GridLayout.spec(GridLayout.UNDEFINED, 1f)
-            ).apply { width = 0 }
-            tagBox.addView(b)
+            ).apply { width = 0; setMargins(dp(3), dp(3), dp(3), dp(3)) }
+            tagBox.addView(chip)
         }
     }
 
@@ -97,24 +153,65 @@ class MainActivity : Activity() {
         val to = dayStart(day + 1)
         slots = generateSequence(from) { it + HALF }.takeWhile { it < to }.toList()
         recs = db.range(from, to).associateBy { it.slot }
-        dateTv.text = SimpleDateFormat("yyyy-MM-dd EEE", Locale.getDefault()).format(Date(from)) +
-                if (day == 0) "（今天）" else ""
-        head.text = "正在记录 ${hhmm(target)}–${hhmm(target + HALF)}" +
-                (recs[target]?.let { "（已记：${it.tag}）" } ?: "")
-        adapter.clear()
-        adapter.addAll(slots.map { sl ->
-            hhmm(sl) + "   " + (recs[sl]?.let { it.tag + if (it.note.isNotEmpty()) " · " + it.note else "" } ?: "—")
-        })
+        dateTv.text = SimpleDateFormat("M月d日 EEEE", Locale.getDefault()).format(Date(from)) +
+                if (day == 0) " · 今天" else ""
+        head.text = "${hhmm(target)} – ${hhmm(target + HALF)}" +
+                (recs[target]?.let { "　已记：${it.tag}" } ?: "　现在在做什么？")
+        adapter.notifyDataSetChanged()
+    }
+
+    private inner class SlotAdapter : BaseAdapter() {
+        override fun getCount() = slots.size
+        override fun getItem(p: Int) = slots[p]
+        override fun getItemId(p: Int) = p.toLong()
+        override fun getView(p: Int, v: View?, parent: ViewGroup): View {
+            val s = slots[p]
+            val r = recs[s]
+            val row = LinearLayout(this@MainActivity).apply {
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(dp(10), dp(9), dp(10), dp(9))
+                if (s == target) background = Ui.glass(this@MainActivity, 14, 0x99FFFFFF, 0xCCFFFFFF.toInt())
+            }
+            row.addView(Ui.label(this@MainActivity, hhmm(s), 14f, Ui.INK2).apply {
+                typeface = Typeface.MONOSPACE
+                minWidth = dp(54)
+            })
+            if (r == null) {
+                row.addView(Ui.label(this@MainActivity, "—", 14f, Ui.alpha(Ui.INK2, 0x80)))
+            } else {
+                row.addView(Ui.label(this@MainActivity, r.tag, 13f).apply {
+                    setPadding(dp(10), dp(3), dp(10), dp(3))
+                    background = Ui.glass(this@MainActivity, 10, Ui.alpha(colorOf(r.tag), 0x99), 0x66FFFFFF)
+                })
+                if (r.note.isNotEmpty()) row.addView(
+                    Ui.label(this@MainActivity, r.note, 13f, Ui.INK2).apply {
+                        setSingleLine(); ellipsize = TextUtils.TruncateAt.END
+                    },
+                    LinearLayout.LayoutParams(0, -2, 1f).apply { leftMargin = dp(8) }
+                )
+            }
+            return row
+        }
     }
 
     private fun hm(x: Int) = "%02d:%02d".format(x / 60, x % 60)
 
     private fun settings() {
-        val pad = (20 * resources.displayMetrics.density).toInt()
-        val v = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(pad, pad / 2, pad, 0) }
-        val et = EditText(this).apply { setText(P.tags(this@MainActivity).joinToString(",")); hint = "标签，用逗号分隔" }
-        val bs = Button(this)
-        val be = Button(this)
+        val v = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(8), dp(20), 0)
+        }
+        fun lp() = LinearLayout.LayoutParams(-1, -2).apply { topMargin = dp(8) }
+        val et = EditText(this).apply {
+            setText(P.tags(this@MainActivity).joinToString(","))
+            hint = "标签，用逗号分隔"
+            textSize = 15f
+            setTextColor(Ui.INK)
+            background = Ui.glass(this@MainActivity, 14, 0x55FFFFFF, 0x66FFFFFF)
+            setPadding(dp(14), dp(10), dp(14), dp(10))
+        }
+        val bs = Ui.chip(this, "", white) {}
+        val be = Ui.chip(this, "", white) {}
         fun upd() {
             bs.text = "免打扰开始  " + hm(P.qs(this))
             be.text = "免打扰结束  " + hm(P.qe(this))
@@ -128,23 +225,25 @@ class MainActivity : Activity() {
                 P.qe(this) / 60, P.qe(this) % 60, true).show()
         }
         upd()
-        v.addView(TextView(this).apply { text = "标签（逗号分隔）" })
-        v.addView(et)
-        v.addView(bs); v.addView(be)
-        v.addView(TextView(this).apply { text = "开始和结束设成相同时间 = 不启用免打扰" })
-        v.addView(btn("允许精确闹钟（让提醒准点）") {
+        v.addView(Ui.label(this, "标签（逗号分隔）", 13f, Ui.INK2))
+        v.addView(et, lp())
+        v.addView(bs, lp()); v.addView(be, lp())
+        v.addView(Ui.label(this, "开始和结束设成相同时间 = 不启用免打扰", 12f, Ui.INK2), lp())
+        v.addView(Ui.chip(this, "允许精确闹钟（让提醒准点）", white) {
             if (Build.VERSION.SDK_INT >= 31)
                 startActivity(Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM, Uri.parse("package:$packageName")))
-        })
-        v.addView(btn("电池优化设置（建议设为不受限制）") {
+        }, lp())
+        v.addView(Ui.chip(this, "电池优化设置（建议设为不受限制）", white) {
             startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
-        })
-        AlertDialog.Builder(this).setTitle("设置").setView(v)
+        }, lp())
+        val d = AlertDialog.Builder(this).setTitle("设置").setView(v)
             .setPositiveButton("保存") { _, _ ->
                 if (et.text.isNotBlank()) P.setTags(this, et.text.toString())
                 Sched.schedule(this)
                 buildTags()
-            }.setNegativeButton("取消", null).show()
+            }.setNegativeButton("取消", null).create()
+        Ui.glassDialog(this, d)
+        d.show()
     }
 
     private fun csv(s: String) = "\"" + s.replace("\"", "\"\"") + "\""

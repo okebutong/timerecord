@@ -8,7 +8,7 @@
         android:allowBackup="true"
         android:icon="@drawable/ic_clock"
         android:label="半小时记录"
-        android:theme="@android:style/Theme.DeviceDefault.Light">
+        android:theme="@android:style/Theme.DeviceDefault.Light.NoActionBar">
 
         <activity android:name=".MainActivity" android:exported="true">
             <intent-filter>
