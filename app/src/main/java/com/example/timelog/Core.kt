@@ -121,7 +121,7 @@ object Sched {
         val nm = c.getSystemService(NotificationManager::class.java)
         nm.createNotificationChannel(NotificationChannel(CH, "记录提醒", NotificationManager.IMPORTANCE_HIGH))
         val b = Notification.Builder(c, CH)
-            .setSmallIcon(android.R.drawable.ic_menu_recent_events)
+            .setSmallIcon(R.drawable.ic_clock)
             .setContentTitle("现在在做什么？")
             .setContentText("${hhmm(slot)}–${hhmm(slot + HALF)} 这半小时")
             .setAutoCancel(true)
